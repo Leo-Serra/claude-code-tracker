@@ -12,6 +12,24 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeTrackerContainer",
+          "title": "Claude Token Tracker",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeTrackerContainer": [
+        {
+          "type": "webview",
+          "id": "claudeTracker.dashboard",
+          "name": "Token Usage"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "claudeTracker.openDashboard",
