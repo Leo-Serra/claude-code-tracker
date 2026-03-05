@@ -14,10 +14,40 @@
   "contributes": {
     "commands": [
       {
-        "command": "claude-token-tracker.helloWorld",
-        "title": "Hello World"
+        "command": "claudeTracker.openDashboard",
+        "title": "Claude Tracker: Open Dashboard"
+      },
+      {
+        "command": "claudeTracker.resetCache",
+        "title": "Claude Tracker: Reset Cache"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Claude Tracker",
+      "properties": {
+        "claudeTracker.customClaudeDir": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the .claude directory (leave empty to use ~/.claude)"
+        },
+        "claudeTracker.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 10,
+          "description": "Polling interval in seconds for usage data refresh"
+        },
+        "claudeTracker.showInStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show token usage in the status bar"
+        },
+        "claudeTracker.currency": {
+          "type": "string",
+          "default": "USD",
+          "enum": ["USD", "EUR"],
+          "description": "Currency for cost estimates"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
