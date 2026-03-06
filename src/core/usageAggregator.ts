@@ -3,10 +3,7 @@ import { UsageEntry, BlockUsage, DailyUsage, ProjectUsage, ModelUsage, Dashboard
 import { calculateCost, sumUsage, totalTokens } from './costCalculator';
 
 const BLOCK_MS = 5 * 60 * 60 * 1000; // 5 hours in ms
-const BLOCK_LIMIT_TOKENS = 200_000;
-// Estimated cost budget per 5h block for Claude Code Pro.
-// Not officially documented — community estimate. Could be made configurable.
-const BLOCK_BUDGET_USD = 5.00;
+const BLOCK_LIMIT_TOKENS = 1_000_000;
 
 /**
  * Splits entries into blocks: a new block starts whenever there is a gap
@@ -19,18 +16,22 @@ function splitIntoBlocks(entries: UsageEntry[]): { start: Date; end: Date; entri
   const sorted = [...entries].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
   const blocks: { start: Date; end: Date; entries: UsageEntry[] }[] = [];
   let blockStart = sorted[0].timestamp;
+  let blockEnd = new Date(blockStart.getTime() + BLOCK_MS);
   let blockEntries: UsageEntry[] = [sorted[0]];
 
   for (let i = 1; i < sorted.length; i++) {
-    const gap = sorted[i].timestamp.getTime() - sorted[i - 1].timestamp.getTime();
-    if (gap >= BLOCK_MS) {
-      blocks.push({ start: blockStart, end: new Date(blockStart.getTime() + BLOCK_MS), entries: blockEntries });
+    // Start a new block if this entry falls outside the current 5h window.
+    // This correctly handles continuous usage beyond 5h (no gap >= 5h between
+    // consecutive entries, but total span exceeds the window).
+    if (sorted[i].timestamp.getTime() >= blockEnd.getTime()) {
+      blocks.push({ start: blockStart, end: blockEnd, entries: blockEntries });
       blockStart = sorted[i].timestamp;
+      blockEnd = new Date(blockStart.getTime() + BLOCK_MS);
       blockEntries = [];
     }
     blockEntries.push(sorted[i]);
   }
-  blocks.push({ start: blockStart, end: new Date(blockStart.getTime() + BLOCK_MS), entries: blockEntries });
+  blocks.push({ start: blockStart, end: blockEnd, entries: blockEntries });
 
   return blocks;
 }
@@ -49,7 +50,6 @@ export function computeBlock(entries: UsageEntry[], now: Date): BlockUsage {
       startTime: now, endTime: blockEnd,
       totalUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
       totalTokens: 0, limitTokens: BLOCK_LIMIT_TOKENS, percentUsed: 0,
-      costPercent: 0, costBudget: BLOCK_BUDGET_USD,
       burnRatePerHour: 0, estimatedExhaustionMs: null,
       timeRemainingMs: BLOCK_MS, cost: 0,
     };
@@ -60,13 +60,11 @@ export function computeBlock(entries: UsageEntry[], now: Date): BlockUsage {
   const blockEnd = currentBlock.end;
 
   const totalUsage = sumUsage(blockEntries.map(e => e.usage));
-  // Token-based limit: input + output + cache_creation (cache_read excluded — already cached).
-  // Note: the exact tokens Claude Code counts is not officially documented.
-  const tokens = totalUsage.input_tokens + totalUsage.output_tokens + totalUsage.cache_creation_input_tokens;
+  // All tokens: Claude Code counts input+output+cache_write+cache_read for the 5h block limit.
+  const tokens = totalUsage.input_tokens + totalUsage.output_tokens +
+    totalUsage.cache_creation_input_tokens + totalUsage.cache_read_input_tokens;
   const percentUsed = Math.min(100, (tokens / BLOCK_LIMIT_TOKENS) * 100);
   const totalCost = blockEntries.reduce((sum, e) => sum + calculateCost(e.usage, e.model), 0);
-  // Cost-based percentage: normalizes across models (Opus costs more per token than Haiku).
-  const costPercent = Math.min(100, (totalCost / BLOCK_BUDGET_USD) * 100);
 
   const elapsedMs = now.getTime() - blockStart.getTime();
   const elapsedHours = elapsedMs / 3_600_000;
@@ -88,8 +86,6 @@ export function computeBlock(entries: UsageEntry[], now: Date): BlockUsage {
     totalTokens: tokens,
     limitTokens: BLOCK_LIMIT_TOKENS,
     percentUsed,
-    costPercent,
-    costBudget: BLOCK_BUDGET_USD,
     burnRatePerHour,
     estimatedExhaustionMs,
     timeRemainingMs,

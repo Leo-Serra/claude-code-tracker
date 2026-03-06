@@ -19,9 +19,7 @@ export interface BlockUsage {
   totalUsage: TokenUsage;
   totalTokens: number;
   limitTokens: number;
-  percentUsed: number;     // token-based: (input + output + cache_creation) / 200k
-  costPercent: number;     // cost-based: cost / costBudget (normalizes across models)
-  costBudget: number;      // estimated $ budget per 5h block (not officially documented)
+  percentUsed: number;
   burnRatePerHour: number;
   estimatedExhaustionMs: number | null;
   timeRemainingMs: number;

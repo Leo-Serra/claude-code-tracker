@@ -86,14 +86,6 @@ export function getWebviewContent(webview: vscode.Webview): string {
     </div>
     <div class="progress-bar"><div id="block-fill" class="progress-fill fill-green" style="width:0%"></div></div>
   </div>
-  <h2>Cost (5h window · est. budget)</h2>
-  <div class="progress-wrap">
-    <div class="progress-label">
-      <span id="block-cost-used">—</span>
-      <span id="block-cost-pct">—%</span>
-    </div>
-    <div class="progress-bar"><div id="block-cost-fill" class="progress-fill fill-green" style="width:0%"></div></div>
-  </div>
 
   <h2>7-day usage</h2>
   <div class="progress-wrap">
@@ -156,12 +148,9 @@ export function getWebviewContent(webview: vscode.Webview): string {
     });
   });
 
-  // NOTE: Claude Code enforces only a per-5h block limit (200k tokens input+output).
-  // There is no officially documented separate weekly token cap.
-  // This value is a user-facing reference point to give a sense of weekly volume,
-  // not a hard API limit. It could be made configurable via VS Code settings
-  // (e.g. claudeTracker.weeklyTokenBudget) if the user wants to set their own target.
-  const WEEKLY_LIMIT = 1_400_000;
+  // Weekly bar: input+output only / 6M (cache tokens excluded — they accumulate to ~100M/week
+  // which makes the percentage useless; 6M matches official Claude Code weekly display).
+  const WEEKLY_LIMIT = 6_000_000;
   let weeklyChart, modelsChart;
 
   function fmtK(n) {
@@ -196,21 +185,12 @@ export function getWebviewContent(webview: vscode.Webview): string {
   }
 
   function updateBlock(b) {
-    // Token bar
     const pct = Math.min(100, b.percentUsed);
     const fill = document.getElementById('block-fill');
     fill.style.width = pct+'%';
     fill.className = 'progress-fill '+(pct>=90?'fill-red':pct>=70?'fill-yellow':'fill-green');
     document.getElementById('block-used').textContent = fmtK(b.totalTokens)+' / '+fmtK(b.limitTokens);
     document.getElementById('block-pct').textContent = Math.round(pct)+'%';
-
-    // Cost bar (normalizes across models — budget is an estimate, not official)
-    const cpct = Math.min(100, b.costPercent);
-    const cfill = document.getElementById('block-cost-fill');
-    cfill.style.width = cpct+'%';
-    cfill.className = 'progress-fill '+(cpct>=90?'fill-red':cpct>=70?'fill-yellow':'fill-green');
-    document.getElementById('block-cost-used').textContent = fmtCost(b.cost)+' / ~'+fmtCost(b.costBudget);
-    document.getElementById('block-cost-pct').textContent = Math.round(cpct)+'%';
 
     document.getElementById('b-input').textContent = fmtK(b.totalUsage.input_tokens);
     document.getElementById('b-output').textContent = fmtK(b.totalUsage.output_tokens);
