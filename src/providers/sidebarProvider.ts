@@ -6,6 +6,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'claudeTracker.dashboard';
 
   private view?: vscode.WebviewView;
+  private onReadyCallback?: () => void;
+
+  onReady(cb: () => void): void {
+    this.onReadyCallback = cb;
+  }
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -19,6 +24,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = getWebviewContent(webviewView.webview);
+
+    // Send current data as soon as the view is ready
+    this.onReadyCallback?.();
   }
 
   sendData(data: DashboardData): void {

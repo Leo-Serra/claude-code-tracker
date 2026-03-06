@@ -37,6 +37,9 @@ export function activate(context: vscode.ExtensionContext) {
   statusBar = new StatusBarProvider('claudeTracker.openDashboard');
 
   sidebar = new SidebarProvider();
+  sidebar.onReady(() => {
+    if (cachedData) { sidebar!.sendData(cachedData); }
+  });
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(SidebarProvider.viewId, sidebar, {
       webviewOptions: { retainContextWhenHidden: true },

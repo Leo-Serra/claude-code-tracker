@@ -45,7 +45,7 @@ export function getWebviewContent(webview: vscode.Webview): string {
 
   .progress-wrap { margin-bottom: 14px; }
   .progress-label { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 0.82em; }
-  .progress-bar { height: 8px; background: var(--vscode-progressBar-background, #444); border-radius: 4px; overflow: hidden; }
+  .progress-bar { height: 8px; background: var(--vscode-input-background, rgba(128,128,128,0.2)); border-radius: 4px; overflow: hidden; }
   .progress-fill { height: 100%; border-radius: 4px; transition: width 0.4s; }
   .fill-green { background: #4caf50; }
   .fill-yellow { background: #ffc107; }
@@ -72,19 +72,36 @@ export function getWebviewContent(webview: vscode.Webview): string {
 
 <div class="tabs">
   <button class="tab active" data-tab="block">Block</button>
-  <button class="tab" data-tab="weekly">Weekly</button>
-  <button class="tab" data-tab="projects">Projects</button>
+  <button class="tab" data-tab="report">Report</button>
   <button class="tab" data-tab="models">Models</button>
 </div>
 
 <!-- TAB: Block -->
 <div id="tab-block" class="tab-content active">
+  <h2>Tokens (5h window)</h2>
   <div class="progress-wrap">
     <div class="progress-label">
       <span id="block-used">—</span>
       <span id="block-pct">—%</span>
     </div>
     <div class="progress-bar"><div id="block-fill" class="progress-fill fill-green" style="width:0%"></div></div>
+  </div>
+  <h2>Cost (5h window · est. budget)</h2>
+  <div class="progress-wrap">
+    <div class="progress-label">
+      <span id="block-cost-used">—</span>
+      <span id="block-cost-pct">—%</span>
+    </div>
+    <div class="progress-bar"><div id="block-cost-fill" class="progress-fill fill-green" style="width:0%"></div></div>
+  </div>
+
+  <h2>7-day usage</h2>
+  <div class="progress-wrap">
+    <div class="progress-label">
+      <span id="weekly-used">—</span>
+      <span id="weekly-pct">—%</span>
+    </div>
+    <div class="progress-bar"><div id="weekly-fill" class="progress-fill fill-green" style="width:0%"></div></div>
   </div>
 
   <div class="token-grid">
@@ -97,23 +114,18 @@ export function getWebviewContent(webview: vscode.Webview): string {
   <div class="stat-row"><span class="stat-label">Resets in</span><span class="stat-value" id="block-remaining">—</span></div>
   <div class="stat-row"><span class="stat-label">Window</span><span class="stat-value" id="block-window">—</span></div>
   <div class="stat-row"><span class="stat-label">Burn rate</span><span class="stat-value" id="block-rate">— tok/h</span></div>
-  <div class="stat-row"><span class="stat-label">Estimated cost</span><span class="stat-value" id="block-cost">—</span></div>
   <div class="stat-row"><span class="stat-label">Prediction</span><span class="stat-value" id="block-pred">—</span></div>
 </div>
 
-<!-- TAB: Weekly -->
-<div id="tab-weekly" class="tab-content">
+<!-- TAB: Report -->
+<div id="tab-report" class="tab-content">
   <h2>Last 7 days</h2>
   <div class="chart-wrap"><canvas id="chart-weekly"></canvas></div>
-  <table>
+  <table style="margin-bottom:14px">
     <thead><tr><th>Date</th><th>Total</th><th>Cost</th></tr></thead>
     <tbody id="weekly-table"></tbody>
   </table>
-</div>
-
-<!-- TAB: Projects -->
-<div id="tab-projects" class="tab-content">
-  <h2>Last 7 days</h2>
+  <h2>Projects</h2>
   <table>
     <thead><tr><th>Project</th><th>Tokens</th><th>Cost</th></tr></thead>
     <tbody id="projects-table"></tbody>
@@ -144,6 +156,12 @@ export function getWebviewContent(webview: vscode.Webview): string {
     });
   });
 
+  // NOTE: Claude Code enforces only a per-5h block limit (200k tokens input+output).
+  // There is no officially documented separate weekly token cap.
+  // This value is a user-facing reference point to give a sense of weekly volume,
+  // not a hard API limit. It could be made configurable via VS Code settings
+  // (e.g. claudeTracker.weeklyTokenBudget) if the user wants to set their own target.
+  const WEEKLY_LIMIT = 1_400_000;
   let weeklyChart, modelsChart;
 
   function fmtK(n) {
@@ -167,13 +185,33 @@ export function getWebviewContent(webview: vscode.Webview): string {
 
   const COLORS = ['#4fc3f7','#aed581','#ffb74d','#ce93d8','#ef9a9a','#80cbc4'];
 
+  function updateWeeklyBar(weekly) {
+    const weeklyTotal = weekly.reduce((sum, d) => sum + d.usage.input_tokens + d.usage.output_tokens, 0);
+    const pct = Math.min(100, (weeklyTotal / WEEKLY_LIMIT) * 100);
+    const fill = document.getElementById('weekly-fill');
+    fill.style.width = pct+'%';
+    fill.className = 'progress-fill '+(pct>=90?'fill-red':pct>=70?'fill-yellow':'fill-green');
+    document.getElementById('weekly-used').textContent = fmtK(weeklyTotal)+' / '+fmtK(WEEKLY_LIMIT);
+    document.getElementById('weekly-pct').textContent = Math.round(pct)+'%';
+  }
+
   function updateBlock(b) {
+    // Token bar
     const pct = Math.min(100, b.percentUsed);
     const fill = document.getElementById('block-fill');
     fill.style.width = pct+'%';
     fill.className = 'progress-fill '+(pct>=90?'fill-red':pct>=70?'fill-yellow':'fill-green');
     document.getElementById('block-used').textContent = fmtK(b.totalTokens)+' / '+fmtK(b.limitTokens);
     document.getElementById('block-pct').textContent = Math.round(pct)+'%';
+
+    // Cost bar (normalizes across models — budget is an estimate, not official)
+    const cpct = Math.min(100, b.costPercent);
+    const cfill = document.getElementById('block-cost-fill');
+    cfill.style.width = cpct+'%';
+    cfill.className = 'progress-fill '+(cpct>=90?'fill-red':cpct>=70?'fill-yellow':'fill-green');
+    document.getElementById('block-cost-used').textContent = fmtCost(b.cost)+' / ~'+fmtCost(b.costBudget);
+    document.getElementById('block-cost-pct').textContent = Math.round(cpct)+'%';
+
     document.getElementById('b-input').textContent = fmtK(b.totalUsage.input_tokens);
     document.getElementById('b-output').textContent = fmtK(b.totalUsage.output_tokens);
     document.getElementById('b-cw').textContent = fmtK(b.totalUsage.cache_creation_input_tokens);
@@ -183,7 +221,6 @@ export function getWebviewContent(webview: vscode.Webview): string {
     document.getElementById('block-window').textContent =
       s.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' – '+e.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
     document.getElementById('block-rate').textContent = fmtK(Math.round(b.burnRatePerHour))+' tok/h';
-    document.getElementById('block-cost').textContent = fmtCost(b.cost);
     let pred;
     if (b.estimatedExhaustionMs === null) pred = 'N/A';
     else if (b.estimatedExhaustionMs === 0) pred = 'Limit exceeded';
@@ -193,27 +230,35 @@ export function getWebviewContent(webview: vscode.Webview): string {
   }
 
   function updateWeekly(weekly) {
-    if (weeklyChart) weeklyChart.destroy();
     const labels = weekly.map(d => fmtDate(d.date));
-    weeklyChart = new Chart(document.getElementById('chart-weekly'), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label:'Input', data: weekly.map(d=>d.usage.input_tokens), backgroundColor: COLORS[0], stack:'a' },
-          { label:'Output', data: weekly.map(d=>d.usage.output_tokens), backgroundColor: COLORS[1], stack:'a' },
-          { label:'Cache', data: weekly.map(d=>d.usage.cache_creation_input_tokens+d.usage.cache_read_input_tokens), backgroundColor: COLORS[2], stack:'a' },
-        ],
-      },
-      options: {
-        responsive:true, maintainAspectRatio:true,
-        plugins:{ legend:{ labels:{ color: cssVar('--vscode-foreground')||'#ccc', boxWidth:10, font:{size:10} } } },
-        scales:{
-          x:{ stacked:true, ticks:{ color: cssVar('--vscode-foreground')||'#ccc', font:{size:9} }, grid:{ color:'rgba(128,128,128,0.12)' } },
-          y:{ stacked:true, ticks:{ color: cssVar('--vscode-foreground')||'#ccc', callback: v=>fmtK(v), font:{size:9} }, grid:{ color:'rgba(128,128,128,0.12)' } },
+    if (weeklyChart) {
+      weeklyChart.data.labels = labels;
+      weeklyChart.data.datasets[0].data = weekly.map(d=>d.usage.input_tokens);
+      weeklyChart.data.datasets[1].data = weekly.map(d=>d.usage.output_tokens);
+      weeklyChart.data.datasets[2].data = weekly.map(d=>d.usage.cache_creation_input_tokens+d.usage.cache_read_input_tokens);
+      weeklyChart.update('none');
+    } else {
+      weeklyChart = new Chart(document.getElementById('chart-weekly'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label:'Input', data: weekly.map(d=>d.usage.input_tokens), backgroundColor: COLORS[0], stack:'a' },
+            { label:'Output', data: weekly.map(d=>d.usage.output_tokens), backgroundColor: COLORS[1], stack:'a' },
+            { label:'Cache', data: weekly.map(d=>d.usage.cache_creation_input_tokens+d.usage.cache_read_input_tokens), backgroundColor: COLORS[2], stack:'a' },
+          ],
         },
-      },
-    });
+        options: {
+          animation: false,
+          responsive:true, maintainAspectRatio:true,
+          plugins:{ legend:{ labels:{ color: cssVar('--vscode-foreground')||'#ccc', boxWidth:10, font:{size:10} } } },
+          scales:{
+            x:{ stacked:true, ticks:{ color: cssVar('--vscode-foreground')||'#ccc', font:{size:9} }, grid:{ color:'rgba(128,128,128,0.12)' } },
+            y:{ stacked:true, ticks:{ color: cssVar('--vscode-foreground')||'#ccc', callback: v=>fmtK(v), font:{size:9} }, grid:{ color:'rgba(128,128,128,0.12)' } },
+          },
+        },
+      });
+    }
     const tbody = document.getElementById('weekly-table');
     tbody.innerHTML = '';
     for (const d of [...weekly].reverse()) {
@@ -238,22 +283,28 @@ export function getWebviewContent(webview: vscode.Webview): string {
   }
 
   function updateModels(models) {
-    if (modelsChart) modelsChart.destroy();
     if (!models.length) {
       document.getElementById('models-table').innerHTML = '<tr><td colspan="3" class="empty">No data</td></tr>';
       return;
     }
-    modelsChart = new Chart(document.getElementById('chart-models'), {
-      type: 'doughnut',
-      data: {
-        labels: models.map(m=>m.model),
-        datasets: [{ data: models.map(m=>totalTok(m.usage)), backgroundColor: COLORS }],
-      },
-      options: {
-        responsive:true, maintainAspectRatio:true,
-        plugins:{ legend:{ position:'bottom', labels:{ color: cssVar('--vscode-foreground')||'#ccc', boxWidth:10, font:{size:10} } } },
-      },
-    });
+    if (modelsChart) {
+      modelsChart.data.labels = models.map(m=>m.model);
+      modelsChart.data.datasets[0].data = models.map(m=>totalTok(m.usage));
+      modelsChart.update('none');
+    } else {
+      modelsChart = new Chart(document.getElementById('chart-models'), {
+        type: 'doughnut',
+        data: {
+          labels: models.map(m=>m.model),
+          datasets: [{ data: models.map(m=>totalTok(m.usage)), backgroundColor: COLORS }],
+        },
+        options: {
+          animation: false,
+          responsive:true, maintainAspectRatio:true,
+          plugins:{ legend:{ position:'bottom', labels:{ color: cssVar('--vscode-foreground')||'#ccc', boxWidth:10, font:{size:10} } } },
+        },
+      });
+    }
     const tbody = document.getElementById('models-table');
     tbody.innerHTML = '';
     for (const m of models) {
@@ -267,6 +318,7 @@ export function getWebviewContent(webview: vscode.Webview): string {
     if (e.data.type !== 'update') return;
     const d = e.data.data;
     updateBlock(d.block);
+    updateWeeklyBar(d.weekly);
     updateWeekly(d.weekly);
     updateProjects(d.projects);
     updateModels(d.models);

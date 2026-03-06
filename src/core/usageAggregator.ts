@@ -2,65 +2,83 @@ import * as path from 'path';
 import { UsageEntry, BlockUsage, DailyUsage, ProjectUsage, ModelUsage, DashboardData } from './types';
 import { calculateCost, sumUsage, totalTokens } from './costCalculator';
 
-const BLOCK_HOURS = 5;
+const BLOCK_MS = 5 * 60 * 60 * 1000; // 5 hours in ms
 const BLOCK_LIMIT_TOKENS = 200_000;
+// Estimated cost budget per 5h block for Claude Code Pro.
+// Not officially documented — community estimate. Could be made configurable.
+const BLOCK_BUDGET_USD = 5.00;
 
-export function getBlockStart(now: Date): Date {
-  // Fixed 5h windows: 00:00, 05:00, 10:00, 15:00, 20:00 UTC
-  const utcHour = now.getUTCHours();
-  const blockHour = Math.floor(utcHour / BLOCK_HOURS) * BLOCK_HOURS;
-  const start = new Date(now);
-  start.setUTCHours(blockHour, 0, 0, 0);
-  return start;
-}
+/**
+ * Splits entries into blocks: a new block starts whenever there is a gap
+ * of >= 5h since the previous entry. This matches how Claude Code actually
+ * tracks rate-limit windows (dynamic, not fixed UTC anchors).
+ */
+function splitIntoBlocks(entries: UsageEntry[]): { start: Date; end: Date; entries: UsageEntry[] }[] {
+  if (entries.length === 0) { return []; }
 
-export function getBlockEnd(blockStart: Date): Date {
-  const end = new Date(blockStart);
-  end.setUTCHours(blockStart.getUTCHours() + BLOCK_HOURS, 0, 0, 0);
-  return end;
+  const sorted = [...entries].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  const blocks: { start: Date; end: Date; entries: UsageEntry[] }[] = [];
+  let blockStart = sorted[0].timestamp;
+  let blockEntries: UsageEntry[] = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = sorted[i].timestamp.getTime() - sorted[i - 1].timestamp.getTime();
+    if (gap >= BLOCK_MS) {
+      blocks.push({ start: blockStart, end: new Date(blockStart.getTime() + BLOCK_MS), entries: blockEntries });
+      blockStart = sorted[i].timestamp;
+      blockEntries = [];
+    }
+    blockEntries.push(sorted[i]);
+  }
+  blocks.push({ start: blockStart, end: new Date(blockStart.getTime() + BLOCK_MS), entries: blockEntries });
+
+  return blocks;
 }
 
 export function computeBlock(entries: UsageEntry[], now: Date): BlockUsage {
-  const blockStart = getBlockStart(now);
-  const blockEnd = getBlockEnd(blockStart);
+  const blocks = splitIntoBlocks(entries);
 
-  const blockEntries = entries.filter(
-    e => e.timestamp >= blockStart && e.timestamp < blockEnd
-  );
+  // Find the active block that contains "now" (started before now and not yet expired)
+  const eligible = blocks.filter(b => b.start <= now && b.end > now);
+  const currentBlock = eligible.length > 0 ? eligible[eligible.length - 1] : null;
 
-  const usageByModel: Record<string, { usage: typeof blockEntries[0]['usage']; cost: number }> = {};
-  let totalCost = 0;
-  for (const e of blockEntries) {
-    const cost = calculateCost(e.usage, e.model);
-    totalCost += cost;
-    if (!usageByModel[e.model]) {
-      usageByModel[e.model] = { usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, cost: 0 };
-    }
-    usageByModel[e.model].usage.input_tokens += e.usage.input_tokens;
-    usageByModel[e.model].usage.output_tokens += e.usage.output_tokens;
-    usageByModel[e.model].usage.cache_creation_input_tokens += e.usage.cache_creation_input_tokens;
-    usageByModel[e.model].usage.cache_read_input_tokens += e.usage.cache_read_input_tokens;
-    usageByModel[e.model].cost += cost;
+  if (!currentBlock) {
+    // No data at all
+    const blockEnd = new Date(now.getTime() + BLOCK_MS);
+    return {
+      startTime: now, endTime: blockEnd,
+      totalUsage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      totalTokens: 0, limitTokens: BLOCK_LIMIT_TOKENS, percentUsed: 0,
+      costPercent: 0, costBudget: BLOCK_BUDGET_USD,
+      burnRatePerHour: 0, estimatedExhaustionMs: null,
+      timeRemainingMs: BLOCK_MS, cost: 0,
+    };
   }
 
+  const blockEntries = currentBlock.entries;
+  const blockStart = currentBlock.start;
+  const blockEnd = currentBlock.end;
+
   const totalUsage = sumUsage(blockEntries.map(e => e.usage));
-  const tokens = totalTokens(totalUsage);
+  // Token-based limit: input + output + cache_creation (cache_read excluded — already cached).
+  // Note: the exact tokens Claude Code counts is not officially documented.
+  const tokens = totalUsage.input_tokens + totalUsage.output_tokens + totalUsage.cache_creation_input_tokens;
   const percentUsed = Math.min(100, (tokens / BLOCK_LIMIT_TOKENS) * 100);
+  const totalCost = blockEntries.reduce((sum, e) => sum + calculateCost(e.usage, e.model), 0);
+  // Cost-based percentage: normalizes across models (Opus costs more per token than Haiku).
+  const costPercent = Math.min(100, (totalCost / BLOCK_BUDGET_USD) * 100);
 
   const elapsedMs = now.getTime() - blockStart.getTime();
   const elapsedHours = elapsedMs / 3_600_000;
   const burnRatePerHour = elapsedHours > 0 ? tokens / elapsedHours : 0;
 
-  const timeRemainingMs = blockEnd.getTime() - now.getTime();
+  const timeRemainingMs = Math.max(0, blockEnd.getTime() - now.getTime());
   let estimatedExhaustionMs: number | null = null;
   if (burnRatePerHour > 0) {
     const tokensRemaining = BLOCK_LIMIT_TOKENS - tokens;
-    if (tokensRemaining > 0) {
-      const hoursToExhaustion = tokensRemaining / burnRatePerHour;
-      estimatedExhaustionMs = hoursToExhaustion * 3_600_000;
-    } else {
-      estimatedExhaustionMs = 0;
-    }
+    estimatedExhaustionMs = tokensRemaining > 0
+      ? (tokensRemaining / burnRatePerHour) * 3_600_000
+      : 0;
   }
 
   return {
@@ -70,6 +88,8 @@ export function computeBlock(entries: UsageEntry[], now: Date): BlockUsage {
     totalTokens: tokens,
     limitTokens: BLOCK_LIMIT_TOKENS,
     percentUsed,
+    costPercent,
+    costBudget: BLOCK_BUDGET_USD,
     burnRatePerHour,
     estimatedExhaustionMs,
     timeRemainingMs,
