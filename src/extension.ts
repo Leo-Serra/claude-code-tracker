@@ -13,6 +13,8 @@ let sidebar: SidebarProvider | undefined;
 let oauthClient: OAuthClient | undefined;
 let cachedData: DashboardData | undefined;
 let cachedOAuth: OAuthUsageData | null = null;
+let notified80 = false;
+let notified95 = false;
 
 function getConfig() {
   const cfg = vscode.workspace.getConfiguration('claudeTracker');
@@ -67,6 +69,16 @@ export function activate(context: vscode.ExtensionContext) {
       cachedData.lastUpdated = new Date().toISOString();
       sidebar?.sendData(cachedData);
     }
+    // Threshold notifications
+    const maxPct = Math.max(data.five_hour.utilization, data.seven_day.utilization);
+    if (maxPct >= 95 && !notified95) {
+      notified95 = true;
+      vscode.window.showWarningMessage(`Claude Tracker: usage at ${Math.round(maxPct)}% — approaching limit!`);
+    } else if (maxPct >= 80 && !notified80) {
+      notified80 = true;
+      vscode.window.showInformationMessage(`Claude Tracker: usage at ${Math.round(maxPct)}%`);
+    }
+    if (maxPct < 80) { notified80 = false; notified95 = false; }
   });
 
   oauthClient.onDidError(errType => {

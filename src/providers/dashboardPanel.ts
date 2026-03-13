@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { DashboardData } from '../core/types';
-import { totalTokens } from '../core/costCalculator';
 
 export class DashboardPanel {
   private static instance: DashboardPanel | undefined;
@@ -19,7 +18,7 @@ export class DashboardPanel {
     );
 
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-    this.panel.webview.html = this.getHtml(this.panel.webview, extensionUri);
+    this.panel.webview.html = this.getHtml(this.panel.webview);
   }
 
   static show(extensionUri: vscode.Uri): DashboardPanel {
@@ -46,7 +45,7 @@ export class DashboardPanel {
     this.disposables = [];
   }
 
-  private getHtml(webview: vscode.Webview, _extensionUri: vscode.Uri): string {
+  private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
     const csp = [
       `default-src 'none'`,
@@ -85,18 +84,17 @@ export class DashboardPanel {
   .tab-content { display: none; }
   .tab-content.active { display: block; }
 
-  /* Block tab */
-  .block-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
-  .card {
-    background: var(--vscode-sideBar-background);
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 6px; padding: 14px;
-  }
-  .card-label { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
-  .card-value { font-size: 1.4em; font-weight: 600; }
-  .card-sub { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin-top: 2px; }
+  .status-badge { display: inline-block; font-size: 0.75em; padding: 3px 8px; border-radius: 4px; font-weight: 600; vertical-align: middle; }
+  .status-live { background: #4caf50; color: #fff; }
+  .status-offline { background: #ffc107; color: #333; }
 
-  .progress-wrap { margin-bottom: 20px; }
+  .usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+  .usage-section { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 16px; }
+  .usage-title { font-size: 0.85em; color: var(--vscode-descriptionForeground); text-transform: uppercase; margin-bottom: 10px; }
+  .usage-pct { font-size: 2em; font-weight: 700; margin-bottom: 8px; }
+  .usage-reset { font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+
+  .progress-wrap { margin-bottom: 12px; }
   .progress-label { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.85em; }
   .progress-bar { height: 10px; background: var(--vscode-progressBar-background, #444); border-radius: 5px; overflow: hidden; }
   .progress-fill { height: 100%; border-radius: 5px; transition: width 0.4s; }
@@ -104,79 +102,64 @@ export class DashboardPanel {
   .fill-yellow { background: #ffc107; }
   .fill-red { background: #f44336; }
 
-  .token-breakdown { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 20px; }
-  .token-card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 10px; text-align: center; }
-  .token-card .label { font-size: 0.75em; color: var(--vscode-descriptionForeground); }
-  .token-card .value { font-size: 1.1em; font-weight: 600; margin-top: 2px; }
+  .model-breakdown { margin-top: 16px; padding: 12px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
+  .model-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.9em; }
+  .model-row + .model-row { border-top: 1px solid var(--vscode-panel-border); }
 
-  .prediction { padding: 12px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; font-size: 0.9em; }
-  .prediction .icon { margin-right: 6px; }
-
-  /* Tables */
   table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
   th { text-align: left; padding: 8px 12px; color: var(--vscode-descriptionForeground); border-bottom: 1px solid var(--vscode-panel-border); font-weight: normal; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
   td { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border, #333); }
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: var(--vscode-list-hoverBackground); }
 
-  /* Charts */
   .chart-wrap { margin-bottom: 20px; max-height: 240px; }
   .chart-wrap-sm { margin-bottom: 20px; max-height: 200px; }
 
   .updated { font-size: 0.75em; color: var(--vscode-descriptionForeground); margin-top: 20px; }
   .empty { color: var(--vscode-descriptionForeground); font-style: italic; padding: 20px 0; }
+  .offline-msg { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 0.9em; padding: 20px 0; }
 </style>
 </head>
 <body>
 
-<h1>&#9889; Claude Token Tracker</h1>
+<h1>&#9889; Claude Token Tracker <span class="status-badge status-offline" id="status-badge">OFFLINE</span></h1>
 
 <div class="tabs">
-  <button class="tab active" data-tab="block">Current Block</button>
+  <button class="tab active" data-tab="usage">Usage</button>
   <button class="tab" data-tab="weekly">Weekly</button>
   <button class="tab" data-tab="projects">Projects</button>
   <button class="tab" data-tab="models">Models</button>
 </div>
 
-<!-- TAB: Block -->
-<div id="tab-block" class="tab-content active">
-  <div class="progress-wrap">
-    <div class="progress-label">
-      <span id="block-used">—</span>
-      <span id="block-pct">—%</span>
+<!-- TAB: Usage -->
+<div id="tab-usage" class="tab-content active">
+  <div class="usage-grid">
+    <div class="usage-section">
+      <div class="usage-title">5-hour block</div>
+      <div class="usage-pct" id="block-pct-big">—%</div>
+      <div class="progress-wrap">
+        <div class="progress-bar"><div id="block-fill" class="progress-fill fill-green" style="width:0%"></div></div>
+      </div>
+      <div class="usage-reset">Resets in <span id="block-reset">—</span></div>
     </div>
-    <div class="progress-bar"><div id="block-fill" class="progress-fill fill-green" style="width:0%"></div></div>
-  </div>
-
-  <div class="block-grid">
-    <div class="card">
-      <div class="card-label">Block resets in</div>
-      <div class="card-value" id="block-remaining">—</div>
-      <div class="card-sub" id="block-window">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Burn rate</div>
-      <div class="card-value" id="block-rate">—</div>
-      <div class="card-sub">tokens / hour</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Estimated cost</div>
-      <div class="card-value" id="block-cost">—</div>
-      <div class="card-sub">this block</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Prediction</div>
-      <div class="card-value" id="block-pred">—</div>
-      <div class="card-sub" id="block-pred-sub">until exhaustion</div>
+    <div class="usage-section">
+      <div class="usage-title">Weekly limit</div>
+      <div class="usage-pct" id="weekly-pct-big">—%</div>
+      <div class="progress-wrap">
+        <div class="progress-bar"><div id="weekly-fill" class="progress-fill fill-green" style="width:0%"></div></div>
+      </div>
+      <div class="usage-reset">Resets in <span id="weekly-reset">—</span></div>
     </div>
   </div>
 
-  <h2>Token breakdown</h2>
-  <div class="token-breakdown">
-    <div class="token-card"><div class="label">Input</div><div class="value" id="b-input">—</div></div>
-    <div class="token-card"><div class="label">Output</div><div class="value" id="b-output">—</div></div>
-    <div class="token-card"><div class="label">Cache Write</div><div class="value" id="b-cw">—</div></div>
-    <div class="token-card"><div class="label">Cache Read</div><div class="value" id="b-cr">—</div></div>
+  <div class="model-breakdown" id="model-breakdown" style="display:none">
+    <h2>Weekly usage by model</h2>
+    <div class="model-row"><span>Opus</span><span id="opus-pct">—%</span></div>
+    <div class="model-row"><span>Sonnet</span><span id="sonnet-pct">—%</span></div>
+  </div>
+
+  <div class="offline-msg" id="offline-msg" style="display:none">
+    No OAuth data available. Make sure Claude Code is installed and you are logged in.
   </div>
 </div>
 
@@ -215,7 +198,6 @@ export class DashboardPanel {
 <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script nonce="${nonce}">
 (function() {
-  // Tab switching
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -233,80 +215,83 @@ export class DashboardPanel {
     return String(n);
   }
   function fmtCost(n) { return '$' + n.toFixed(4); }
-  function fmtDuration(ms) {
-    if (ms <= 0) return '0m';
-    const mins = Math.round(ms / 60000);
-    if (mins >= 60) return Math.floor(mins/60) + 'h ' + (mins%60) + 'm';
-    return mins + 'm';
-  }
   function totalTok(u) {
     return u.input_tokens + u.output_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
   }
   function fmtDate(s) {
-    const d = new Date(s);
-    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    return new Date(s).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   }
   function cssVar(v) { return getComputedStyle(document.body).getPropertyValue(v).trim(); }
+  function fmtResetTime(resetAt) {
+    if (!resetAt) return '—';
+    var diffMs = new Date(resetAt).getTime() - Date.now();
+    if (diffMs <= 0) return 'resetting...';
+    var mins = Math.round(diffMs / 60000);
+    if (mins >= 60) return Math.floor(mins/60)+'h '+(mins%60)+'m';
+    return mins+'m';
+  }
+  function fillClass(pct) {
+    return 'progress-fill '+(pct>=80?'fill-red':pct>=50?'fill-yellow':'fill-green');
+  }
 
-  const COLORS = {
-    input: '#4fc3f7',
-    output: '#aed581',
-    cacheWrite: '#ffb74d',
-    cacheRead: '#ce93d8',
+  var COLORS = {
+    input: '#4fc3f7', output: '#aed581', cacheWrite: '#ffb74d', cacheRead: '#ce93d8',
   };
+  var PALETTE = ['#4fc3f7','#aed581','#ffb74d','#ce93d8','#ef9a9a','#80cbc4'];
 
-  function updateBlock(block) {
-    const pct = Math.min(100, block.percentUsed);
-    const fill = document.getElementById('block-fill');
-    fill.style.width = pct + '%';
-    fill.className = 'progress-fill ' + (pct >= 90 ? 'fill-red' : pct >= 70 ? 'fill-yellow' : 'fill-green');
+  function updateUsageTab(oauth) {
+    var badge = document.getElementById('status-badge');
+    var offlineMsg = document.getElementById('offline-msg');
+    var breakdown = document.getElementById('model-breakdown');
 
-    document.getElementById('block-used').textContent = fmtK(block.totalTokens) + ' / ' + fmtK(block.limitTokens) + ' tokens';
-    document.getElementById('block-pct').textContent = Math.round(pct) + '%';
-    document.getElementById('block-remaining').textContent = fmtDuration(block.timeRemainingMs);
-
-    const start = new Date(block.startTime);
-    const end = new Date(block.endTime);
-    document.getElementById('block-window').textContent =
-      start.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + ' – ' +
-      end.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-
-    document.getElementById('block-rate').textContent = fmtK(Math.round(block.burnRatePerHour));
-    document.getElementById('block-cost').textContent = fmtCost(block.cost);
-
-    if (block.estimatedExhaustionMs === null) {
-      document.getElementById('block-pred').textContent = 'N/A';
-      document.getElementById('block-pred-sub').textContent = 'no data yet';
-    } else if (block.estimatedExhaustionMs === 0) {
-      document.getElementById('block-pred').textContent = 'Exceeded';
-      document.getElementById('block-pred-sub').textContent = 'limit reached';
-    } else if (block.estimatedExhaustionMs > block.timeRemainingMs) {
-      document.getElementById('block-pred').textContent = 'OK';
-      document.getElementById('block-pred-sub').textContent = 'within limit';
-    } else {
-      document.getElementById('block-pred').textContent = fmtDuration(block.estimatedExhaustionMs);
-      document.getElementById('block-pred-sub').textContent = 'until exhaustion';
+    if (!oauth) {
+      badge.textContent = 'OFFLINE';
+      badge.className = 'status-badge status-offline';
+      offlineMsg.style.display = '';
+      return;
     }
 
-    const u = block.totalUsage;
-    document.getElementById('b-input').textContent = fmtK(u.input_tokens);
-    document.getElementById('b-output').textContent = fmtK(u.output_tokens);
-    document.getElementById('b-cw').textContent = fmtK(u.cache_creation_input_tokens);
-    document.getElementById('b-cr').textContent = fmtK(u.cache_read_input_tokens);
+    badge.textContent = 'LIVE';
+    badge.className = 'status-badge status-live';
+    offlineMsg.style.display = 'none';
+
+    var pct5h = Math.round(oauth.five_hour.utilization);
+    document.getElementById('block-pct-big').textContent = pct5h+'%';
+    var blockFill = document.getElementById('block-fill');
+    blockFill.style.width = pct5h+'%';
+    blockFill.className = fillClass(pct5h);
+    document.getElementById('block-reset').textContent = fmtResetTime(oauth.five_hour.resets_at);
+
+    var pct7d = Math.round(oauth.seven_day.utilization);
+    document.getElementById('weekly-pct-big').textContent = pct7d+'%';
+    var weeklyFill = document.getElementById('weekly-fill');
+    weeklyFill.style.width = pct7d+'%';
+    weeklyFill.className = fillClass(pct7d);
+    document.getElementById('weekly-reset').textContent = fmtResetTime(oauth.seven_day.resets_at);
+
+    var opusPct = Math.round(oauth.seven_day_opus.utilization);
+    var sonnetPct = Math.round(oauth.seven_day_sonnet.utilization);
+    if (opusPct > 0 || sonnetPct > 0) {
+      breakdown.style.display = '';
+      document.getElementById('opus-pct').textContent = opusPct+'%';
+      document.getElementById('sonnet-pct').textContent = sonnetPct+'%';
+    } else {
+      breakdown.style.display = 'none';
+    }
   }
 
   function updateWeekly(weekly) {
-    const labels = weekly.map(d => fmtDate(d.date));
-    const inputData = weekly.map(d => d.usage.input_tokens);
-    const outputData = weekly.map(d => d.usage.output_tokens);
-    const cwData = weekly.map(d => d.usage.cache_creation_input_tokens);
-    const crData = weekly.map(d => d.usage.cache_read_input_tokens);
+    var labels = weekly.map(function(d){ return fmtDate(d.date); });
+    var inputData = weekly.map(function(d){ return d.usage.input_tokens; });
+    var outputData = weekly.map(function(d){ return d.usage.output_tokens; });
+    var cwData = weekly.map(function(d){ return d.usage.cache_creation_input_tokens; });
+    var crData = weekly.map(function(d){ return d.usage.cache_read_input_tokens; });
 
     if (weeklyChart) { weeklyChart.destroy(); }
     weeklyChart = new Chart(document.getElementById('chart-weekly'), {
       type: 'bar',
       data: {
-        labels,
+        labels: labels,
         datasets: [
           { label: 'Input', data: inputData, backgroundColor: COLORS.input, stack: 'a' },
           { label: 'Output', data: outputData, backgroundColor: COLORS.output, stack: 'a' },
@@ -319,17 +304,19 @@ export class DashboardPanel {
         plugins: { legend: { labels: { color: cssVar('--vscode-foreground') || '#ccc' } } },
         scales: {
           x: { stacked: true, ticks: { color: cssVar('--vscode-foreground') || '#ccc' }, grid: { color: 'rgba(128,128,128,0.15)' } },
-          y: { stacked: true, ticks: { color: cssVar('--vscode-foreground') || '#ccc', callback: v => fmtK(v) }, grid: { color: 'rgba(128,128,128,0.15)' } },
+          y: { stacked: true, ticks: { color: cssVar('--vscode-foreground') || '#ccc', callback: function(v){ return fmtK(v); } }, grid: { color: 'rgba(128,128,128,0.15)' } },
         },
       },
     });
 
-    const tbody = document.getElementById('weekly-table');
+    var tbody = document.getElementById('weekly-table');
     tbody.innerHTML = '';
-    for (const d of [...weekly].reverse()) {
-      const tot = totalTok(d.usage);
-      const tr = document.createElement('tr');
-      tr.innerHTML = \`<td>\${fmtDate(d.date)}</td><td>\${fmtK(d.usage.input_tokens)}</td><td>\${fmtK(d.usage.output_tokens)}</td><td>\${fmtK(d.usage.cache_read_input_tokens)}</td><td>\${fmtK(tot)}</td><td>\${fmtCost(d.cost)}</td>\`;
+    var rev = weekly.slice().reverse();
+    for (var i = 0; i < rev.length; i++) {
+      var d = rev[i];
+      var tot = totalTok(d.usage);
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>'+fmtDate(d.date)+'</td><td>'+fmtK(d.usage.input_tokens)+'</td><td>'+fmtK(d.usage.output_tokens)+'</td><td>'+fmtK(d.usage.cache_read_input_tokens)+'</td><td>'+fmtK(tot)+'</td><td>'+fmtCost(d.cost)+'</td>';
       tbody.appendChild(tr);
     }
   }
@@ -340,28 +327,29 @@ export class DashboardPanel {
       document.getElementById('projects-table').innerHTML = '<tr><td colspan="3" class="empty">No data for the last 7 days</td></tr>';
       return;
     }
-    const top = projects.slice(0, 8);
+    var top = projects.slice(0, 8);
     projectsChart = new Chart(document.getElementById('chart-projects'), {
       type: 'bar',
       data: {
-        labels: top.map(p => p.projectName),
-        datasets: [{ label: 'Tokens', data: top.map(p => totalTok(p.usage)), backgroundColor: COLORS.input }],
+        labels: top.map(function(p){ return p.projectName; }),
+        datasets: [{ label: 'Tokens', data: top.map(function(p){ return totalTok(p.usage); }), backgroundColor: COLORS.input }],
       },
       options: {
         indexAxis: 'y', responsive: true, maintainAspectRatio: true,
         plugins: { legend: { display: false } },
         scales: {
-          x: { ticks: { color: cssVar('--vscode-foreground') || '#ccc', callback: v => fmtK(v) }, grid: { color: 'rgba(128,128,128,0.15)' } },
+          x: { ticks: { color: cssVar('--vscode-foreground') || '#ccc', callback: function(v){ return fmtK(v); } }, grid: { color: 'rgba(128,128,128,0.15)' } },
           y: { ticks: { color: cssVar('--vscode-foreground') || '#ccc' }, grid: { display: false } },
         },
       },
     });
 
-    const tbody = document.getElementById('projects-table');
+    var tbody = document.getElementById('projects-table');
     tbody.innerHTML = '';
-    for (const p of projects) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = \`<td title="\${p.projectPath}">\${p.projectName}</td><td>\${fmtK(totalTok(p.usage))}</td><td>\${fmtCost(p.cost)}</td>\`;
+    for (var i = 0; i < projects.length; i++) {
+      var p = projects[i];
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td title="'+p.projectPath+'">'+p.projectName+'</td><td>'+fmtK(totalTok(p.usage))+'</td><td>'+fmtCost(p.cost)+'</td>';
       tbody.appendChild(tr);
     }
   }
@@ -372,12 +360,11 @@ export class DashboardPanel {
       document.getElementById('models-table').innerHTML = '<tr><td colspan="5" class="empty">No data for the last 30 days</td></tr>';
       return;
     }
-    const palette = [COLORS.input, COLORS.output, COLORS.cacheWrite, COLORS.cacheRead, '#ef9a9a', '#80cbc4'];
     modelsChart = new Chart(document.getElementById('chart-models'), {
       type: 'doughnut',
       data: {
-        labels: models.map(m => m.model),
-        datasets: [{ data: models.map(m => totalTok(m.usage)), backgroundColor: palette }],
+        labels: models.map(function(m){ return m.model; }),
+        datasets: [{ data: models.map(function(m){ return totalTok(m.usage); }), backgroundColor: PALETTE }],
       },
       options: {
         responsive: true, maintainAspectRatio: true,
@@ -385,21 +372,22 @@ export class DashboardPanel {
       },
     });
 
-    const tbody = document.getElementById('models-table');
+    var tbody = document.getElementById('models-table');
     tbody.innerHTML = '';
-    for (const m of models) {
-      const tot = totalTok(m.usage);
-      const tr = document.createElement('tr');
-      tr.innerHTML = \`<td>\${m.model}</td><td>\${fmtK(m.usage.input_tokens)}</td><td>\${fmtK(m.usage.output_tokens)}</td><td>\${fmtK(tot)}</td><td>\${fmtCost(m.cost)}</td>\`;
+    for (var i = 0; i < models.length; i++) {
+      var m = models[i];
+      var tot = totalTok(m.usage);
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>'+m.model+'</td><td>'+fmtK(m.usage.input_tokens)+'</td><td>'+fmtK(m.usage.output_tokens)+'</td><td>'+fmtK(tot)+'</td><td>'+fmtCost(m.cost)+'</td>';
       tbody.appendChild(tr);
     }
   }
 
-  window.addEventListener('message', event => {
-    const msg = event.data;
-    if (msg.type !== 'update') { return; }
-    const data = msg.data;
-    updateBlock(data.block);
+  window.addEventListener('message', function(event) {
+    var msg = event.data;
+    if (msg.type !== 'update') return;
+    var data = msg.data;
+    updateUsageTab(data.oauth);
     updateWeekly(data.weekly);
     updateProjects(data.projects);
     updateModels(data.models);

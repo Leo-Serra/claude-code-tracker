@@ -38,6 +38,10 @@ export function getWebviewContent(webview: vscode.Webview): string {
   .tab-content { display: none; }
   .tab-content.active { display: block; }
 
+  .status-badge { display: inline-block; font-size: 0.7em; padding: 2px 6px; border-radius: 3px; margin-bottom: 10px; font-weight: 600; }
+  .status-live { background: #4caf50; color: #fff; }
+  .status-offline { background: #ffc107; color: #333; }
+
   .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--vscode-panel-border, #333); font-size: 0.88em; }
   .stat-row:last-child { border-bottom: none; }
   .stat-label { color: var(--vscode-descriptionForeground); }
@@ -51,10 +55,9 @@ export function getWebviewContent(webview: vscode.Webview): string {
   .fill-yellow { background: #ffc107; }
   .fill-red { background: #f44336; }
 
-  .token-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }
-  .token-card { background: var(--vscode-sideBarSectionHeader-background, rgba(128,128,128,0.1)); border-radius: 4px; padding: 7px 9px; }
-  .token-card .lbl { font-size: 0.72em; color: var(--vscode-descriptionForeground); }
-  .token-card .val { font-size: 1em; font-weight: 600; margin-top: 1px; }
+  .section { margin-bottom: 16px; }
+  .model-row { font-size: 0.82em; padding: 3px 0; display: flex; justify-content: space-between; }
+  .model-label { color: var(--vscode-descriptionForeground); }
 
   .chart-wrap { margin-bottom: 14px; }
 
@@ -66,47 +69,50 @@ export function getWebviewContent(webview: vscode.Webview): string {
 
   .updated { font-size: 0.72em; color: var(--vscode-descriptionForeground); margin-top: 14px; }
   .empty { color: var(--vscode-descriptionForeground); font-style: italic; padding: 12px 0; font-size: 0.88em; }
+  .offline-msg { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 0.85em; padding: 8px 0; }
 </style>
 </head>
 <body>
 
 <div class="tabs">
-  <button class="tab active" data-tab="block">Block</button>
+  <button class="tab active" data-tab="usage">Usage</button>
   <button class="tab" data-tab="report">Report</button>
   <button class="tab" data-tab="models">Models</button>
 </div>
 
-<!-- TAB: Block -->
-<div id="tab-block" class="tab-content active">
-  <h2>Tokens (5h window)</h2>
+<!-- TAB: Usage (OAuth data) -->
+<div id="tab-usage" class="tab-content active">
+  <span class="status-badge status-offline" id="status-badge">OFFLINE</span>
+
+  <h2>5-hour block</h2>
   <div class="progress-wrap">
     <div class="progress-label">
-      <span id="block-used">—</span>
+      <span id="block-label">Usage</span>
       <span id="block-pct">—%</span>
     </div>
     <div class="progress-bar"><div id="block-fill" class="progress-fill fill-green" style="width:0%"></div></div>
   </div>
+  <div class="stat-row"><span class="stat-label">Resets in</span><span class="stat-value" id="block-reset">—</span></div>
 
-  <h2>7-day usage</h2>
+  <h2 style="margin-top:14px">Weekly limit</h2>
   <div class="progress-wrap">
     <div class="progress-label">
-      <span id="weekly-used">—</span>
+      <span id="weekly-label">Usage</span>
       <span id="weekly-pct">—%</span>
     </div>
     <div class="progress-bar"><div id="weekly-fill" class="progress-fill fill-green" style="width:0%"></div></div>
   </div>
+  <div class="stat-row"><span class="stat-label">Resets in</span><span class="stat-value" id="weekly-reset">—</span></div>
 
-  <div class="token-grid">
-    <div class="token-card"><div class="lbl">Input</div><div class="val" id="b-input">—</div></div>
-    <div class="token-card"><div class="lbl">Output</div><div class="val" id="b-output">—</div></div>
-    <div class="token-card"><div class="lbl">Cache Write</div><div class="val" id="b-cw">—</div></div>
-    <div class="token-card"><div class="lbl">Cache Read</div><div class="val" id="b-cr">—</div></div>
+  <div class="section" id="model-breakdown" style="margin-top:14px; display:none">
+    <h2>Weekly by model</h2>
+    <div class="model-row"><span class="model-label">Opus</span><span class="stat-value" id="opus-pct">—%</span></div>
+    <div class="model-row"><span class="model-label">Sonnet</span><span class="stat-value" id="sonnet-pct">—%</span></div>
   </div>
 
-  <div class="stat-row"><span class="stat-label">Resets in</span><span class="stat-value" id="block-remaining">—</span></div>
-  <div class="stat-row"><span class="stat-label">Window</span><span class="stat-value" id="block-window">—</span></div>
-  <div class="stat-row"><span class="stat-label">Burn rate</span><span class="stat-value" id="block-rate">— tok/h</span></div>
-  <div class="stat-row"><span class="stat-label">Prediction</span><span class="stat-value" id="block-pred">—</span></div>
+  <div class="offline-msg" id="offline-msg" style="display:none">
+    No OAuth data available. Make sure Claude Code is installed and you are logged in.
+  </div>
 </div>
 
 <!-- TAB: Report -->
@@ -148,9 +154,6 @@ export function getWebviewContent(webview: vscode.Webview): string {
     });
   });
 
-  // Weekly bar: input+output only / 6M (cache tokens excluded — they accumulate to ~100M/week
-  // which makes the percentage useless; 6M matches official Claude Code weekly display).
-  const WEEKLY_LIMIT = 6_000_000;
   let weeklyChart, modelsChart;
 
   function fmtK(n) {
@@ -159,11 +162,6 @@ export function getWebviewContent(webview: vscode.Webview): string {
     return String(n);
   }
   function fmtCost(n) { return '$'+n.toFixed(4); }
-  function fmtDur(ms) {
-    if (ms <= 0) return '0m';
-    const m = Math.round(ms/60000);
-    return m >= 60 ? Math.floor(m/60)+'h '+(m%60)+'m' : m+'m';
-  }
   function totalTok(u) {
     return u.input_tokens + u.output_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
   }
@@ -171,42 +169,64 @@ export function getWebviewContent(webview: vscode.Webview): string {
     return new Date(s).toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
   }
   function cssVar(v) { return getComputedStyle(document.body).getPropertyValue(v).trim(); }
+  function fmtResetTime(resetAt) {
+    if (!resetAt) return '—';
+    const diffMs = new Date(resetAt).getTime() - Date.now();
+    if (diffMs <= 0) return 'resetting...';
+    const mins = Math.round(diffMs / 60000);
+    if (mins >= 60) return Math.floor(mins/60)+'h '+(mins%60)+'m';
+    return mins+'m';
+  }
+  function fillClass(pct) {
+    return 'progress-fill '+(pct>=80?'fill-red':pct>=50?'fill-yellow':'fill-green');
+  }
 
   const COLORS = ['#4fc3f7','#aed581','#ffb74d','#ce93d8','#ef9a9a','#80cbc4'];
 
-  function updateWeeklyBar(weekly) {
-    const weeklyTotal = weekly.reduce((sum, d) => sum + d.usage.input_tokens + d.usage.output_tokens, 0);
-    const pct = Math.min(100, (weeklyTotal / WEEKLY_LIMIT) * 100);
-    const fill = document.getElementById('weekly-fill');
-    fill.style.width = pct+'%';
-    fill.className = 'progress-fill '+(pct>=90?'fill-red':pct>=70?'fill-yellow':'fill-green');
-    document.getElementById('weekly-used').textContent = fmtK(weeklyTotal)+' / '+fmtK(WEEKLY_LIMIT);
-    document.getElementById('weekly-pct').textContent = Math.round(pct)+'%';
-  }
+  function updateUsageTab(oauth) {
+    const badge = document.getElementById('status-badge');
+    const offlineMsg = document.getElementById('offline-msg');
+    const breakdown = document.getElementById('model-breakdown');
 
-  function updateBlock(b) {
-    const pct = Math.min(100, b.percentUsed);
-    const fill = document.getElementById('block-fill');
-    fill.style.width = pct+'%';
-    fill.className = 'progress-fill '+(pct>=90?'fill-red':pct>=70?'fill-yellow':'fill-green');
-    document.getElementById('block-used').textContent = fmtK(b.totalTokens)+' / '+fmtK(b.limitTokens);
-    document.getElementById('block-pct').textContent = Math.round(pct)+'%';
+    if (!oauth) {
+      badge.textContent = 'OFFLINE';
+      badge.className = 'status-badge status-offline';
+      offlineMsg.style.display = '';
+      return;
+    }
 
-    document.getElementById('b-input').textContent = fmtK(b.totalUsage.input_tokens);
-    document.getElementById('b-output').textContent = fmtK(b.totalUsage.output_tokens);
-    document.getElementById('b-cw').textContent = fmtK(b.totalUsage.cache_creation_input_tokens);
-    document.getElementById('b-cr').textContent = fmtK(b.totalUsage.cache_read_input_tokens);
-    document.getElementById('block-remaining').textContent = fmtDur(b.timeRemainingMs);
-    const s = new Date(b.startTime), e = new Date(b.endTime);
-    document.getElementById('block-window').textContent =
-      s.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' – '+e.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-    document.getElementById('block-rate').textContent = fmtK(Math.round(b.burnRatePerHour))+' tok/h';
-    let pred;
-    if (b.estimatedExhaustionMs === null) pred = 'N/A';
-    else if (b.estimatedExhaustionMs === 0) pred = 'Limit exceeded';
-    else if (b.estimatedExhaustionMs > b.timeRemainingMs) pred = 'Within limit';
-    else pred = fmtDur(b.estimatedExhaustionMs)+' to limit';
-    document.getElementById('block-pred').textContent = pred;
+    badge.textContent = 'LIVE';
+    badge.className = 'status-badge status-live';
+    offlineMsg.style.display = 'none';
+
+    // 5h block
+    const pct5h = Math.round(oauth.five_hour.utilization);
+    document.getElementById('block-pct').textContent = pct5h+'%';
+    document.getElementById('block-label').textContent = '5h block';
+    const blockFill = document.getElementById('block-fill');
+    blockFill.style.width = pct5h+'%';
+    blockFill.className = fillClass(pct5h);
+    document.getElementById('block-reset').textContent = fmtResetTime(oauth.five_hour.resets_at);
+
+    // 7-day
+    const pct7d = Math.round(oauth.seven_day.utilization);
+    document.getElementById('weekly-pct').textContent = pct7d+'%';
+    document.getElementById('weekly-label').textContent = 'Weekly';
+    const weeklyFill = document.getElementById('weekly-fill');
+    weeklyFill.style.width = pct7d+'%';
+    weeklyFill.className = fillClass(pct7d);
+    document.getElementById('weekly-reset').textContent = fmtResetTime(oauth.seven_day.resets_at);
+
+    // Model breakdown
+    const opusPct = Math.round(oauth.seven_day_opus.utilization);
+    const sonnetPct = Math.round(oauth.seven_day_sonnet.utilization);
+    if (opusPct > 0 || sonnetPct > 0) {
+      breakdown.style.display = '';
+      document.getElementById('opus-pct').textContent = opusPct+'%';
+      document.getElementById('sonnet-pct').textContent = sonnetPct+'%';
+    } else {
+      breakdown.style.display = 'none';
+    }
   }
 
   function updateWeekly(weekly) {
@@ -243,7 +263,7 @@ export function getWebviewContent(webview: vscode.Webview): string {
     tbody.innerHTML = '';
     for (const d of [...weekly].reverse()) {
       const tr = document.createElement('tr');
-      tr.innerHTML = \`<td>\${fmtDate(d.date)}</td><td>\${fmtK(totalTok(d.usage))}</td><td>\${fmtCost(d.cost)}</td>\`;
+      tr.innerHTML = '<td>'+fmtDate(d.date)+'</td><td>'+fmtK(totalTok(d.usage))+'</td><td>'+fmtCost(d.cost)+'</td>';
       tbody.appendChild(tr);
     }
   }
@@ -257,7 +277,7 @@ export function getWebviewContent(webview: vscode.Webview): string {
     }
     for (const p of projects) {
       const tr = document.createElement('tr');
-      tr.innerHTML = \`<td title="\${p.projectPath}">\${p.projectName}</td><td>\${fmtK(totalTok(p.usage))}</td><td>\${fmtCost(p.cost)}</td>\`;
+      tr.innerHTML = '<td title="'+p.projectPath+'">'+p.projectName+'</td><td>'+fmtK(totalTok(p.usage))+'</td><td>'+fmtCost(p.cost)+'</td>';
       tbody.appendChild(tr);
     }
   }
@@ -289,7 +309,7 @@ export function getWebviewContent(webview: vscode.Webview): string {
     tbody.innerHTML = '';
     for (const m of models) {
       const tr = document.createElement('tr');
-      tr.innerHTML = \`<td>\${m.model}</td><td>\${fmtK(totalTok(m.usage))}</td><td>\${fmtCost(m.cost)}</td>\`;
+      tr.innerHTML = '<td>'+m.model+'</td><td>'+fmtK(totalTok(m.usage))+'</td><td>'+fmtCost(m.cost)+'</td>';
       tbody.appendChild(tr);
     }
   }
@@ -297,8 +317,7 @@ export function getWebviewContent(webview: vscode.Webview): string {
   window.addEventListener('message', e => {
     if (e.data.type !== 'update') return;
     const d = e.data.data;
-    updateBlock(d.block);
-    updateWeeklyBar(d.weekly);
+    updateUsageTab(d.oauth);
     updateWeekly(d.weekly);
     updateProjects(d.projects);
     updateModels(d.models);
