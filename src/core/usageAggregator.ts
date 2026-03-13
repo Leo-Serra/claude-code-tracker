@@ -181,6 +181,7 @@ export function computeDashboard(entries: UsageEntry[]): DashboardData {
     weekly: computeDaily(entries, 7),
     projects: computeProjects(entries, 7),
     models: computeModels(entries, 30),
+    oauth: null,
     lastUpdated: now.toISOString(),
   };
 }

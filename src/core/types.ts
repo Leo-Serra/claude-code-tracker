@@ -50,5 +50,26 @@ export interface DashboardData {
   weekly: DailyUsage[];
   projects: ProjectUsage[];
   models: ModelUsage[];
+  oauth: OAuthUsageData | null;
   lastUpdated: string;
+}
+
+// --- OAuth Usage Types ---
+
+export interface OAuthCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // epoch ms
+}
+
+export interface UsageWindow {
+  utilization: number; // 0-100
+  resets_at?: string;  // ISO 8601
+}
+
+export interface OAuthUsageData {
+  five_hour: UsageWindow;
+  seven_day: UsageWindow;
+  seven_day_opus: UsageWindow;
+  seven_day_sonnet: UsageWindow;
 }
