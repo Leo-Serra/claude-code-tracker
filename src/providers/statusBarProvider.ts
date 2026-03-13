@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { BlockUsage, OAuthUsageData } from '../core/types';
+import { OAuthUsageData } from '../core/types';
 
 export class StatusBarProvider {
   private item: vscode.StatusBarItem;
@@ -36,25 +36,6 @@ export class StatusBarProvider {
     this.item.show();
   }
 
-  /** Fallback: update from JSONL-computed block data. */
-  updateFromBlock(block: BlockUsage): void {
-    const used = block.totalTokens;
-    const limit = block.limitTokens;
-    const pct = Math.round(block.percentUsed);
-    const usedK = formatK(used);
-    const limitK = formatK(limit);
-
-    this.item.text = `$(zap) ${usedK} / ${limitK} (${pct}%)`;
-    this.applyColor(pct);
-
-    const mins = Math.round(block.timeRemainingMs / 60_000);
-    const remaining = mins >= 60
-      ? `${Math.floor(mins / 60)}h ${mins % 60}m`
-      : `${mins}m`;
-    this.item.tooltip = `Claude Token Tracker (OFFLINE)\n${usedK} / ${limitK} tokens used (${pct}%)\nBlock resets in ${remaining}\nClick to open dashboard`;
-    this.item.show();
-  }
-
   showNoCredentials(): void {
     this.item.text = '$(zap) Claude Tracker: login required';
     this.item.tooltip = 'No Claude Code credentials found.\nMake sure Claude Code is installed and you are logged in.';
@@ -83,12 +64,6 @@ export class StatusBarProvider {
   dispose(): void {
     this.item.dispose();
   }
-}
-
-function formatK(n: number): string {
-  if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M`; }
-  if (n >= 1_000) { return `${Math.round(n / 1_000)}k`; }
-  return String(n);
 }
 
 function formatResetTime(resetAt?: string): string {

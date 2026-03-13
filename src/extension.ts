@@ -6,6 +6,7 @@ import { OAuthClient } from './core/oauthClient';
 import { StatusBarProvider } from './providers/statusBarProvider';
 import { SidebarProvider } from './providers/sidebarProvider';
 import { DashboardData, OAuthUsageData } from './core/types';
+import { disposeLogger } from './core/logger';
 
 let statusBar: StatusBarProvider | undefined;
 let sidebar: SidebarProvider | undefined;
@@ -24,17 +25,12 @@ function getConfig() {
 }
 
 /** Refresh JSONL data (detail: projects, models, costs). */
-function refreshJsonl() {
+async function refreshJsonl() {
   const { customClaudeDir } = getConfig();
   try {
-    const entries = parseAllEntries(customClaudeDir);
+    const entries = await parseAllEntries(customClaudeDir);
     cachedData = computeDashboard(entries);
     cachedData.oauth = cachedOAuth;
-
-    // If no OAuth data, fall back to JSONL block for status bar
-    if (!cachedOAuth) {
-      statusBar?.updateFromBlock(cachedData.block);
-    }
     sidebar?.sendData(cachedData);
   } catch (err) {
     console.error('[ClaudeTracker] JSONL refresh error:', err);
@@ -133,4 +129,5 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
   oauthClient?.dispose();
   statusBar?.dispose();
+  disposeLogger();
 }

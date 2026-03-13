@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { OAuthUsageData } from './types';
 import { getOAuthCredentials } from './credentialStore';
+import { logInfo, logWarn, logError } from './logger';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const BETA_HEADER = 'oauth-2025-04-20';
@@ -54,6 +55,7 @@ export class OAuthClient {
   async fetchUsage(): Promise<OAuthUsageData | null> {
     const creds = getOAuthCredentials();
     if (!creds) {
+      logWarn('OAuth: no credentials found');
       this.onError.fire('no_credentials');
       return null;
     }
@@ -75,20 +77,22 @@ export class OAuthClient {
       });
 
       if (response.status === 401) {
+        logError('OAuth: token expired or invalid (401)');
         this.onError.fire('auth_expired');
         return null;
       }
 
       if (response.status === 429) {
-        // Exponential backoff
         this.backoffMs = this.backoffMs === 0
           ? MIN_POLL_MS
           : Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
+        logWarn(`OAuth: rate limited (429), backing off ${Math.round(this.backoffMs / 1000)}s`);
         this.onError.fire('rate_limited');
         return this.lastData;
       }
 
       if (!response.ok) {
+        logError(`OAuth: HTTP ${response.status}`);
         this.onError.fire(`http_${response.status}`);
         return this.lastData;
       }
@@ -96,12 +100,14 @@ export class OAuthClient {
       const raw = await response.json() as Record<string, unknown>;
       const data = parseUsageResponse(raw);
       if (data) {
-        this.backoffMs = 0; // Reset backoff on success
+        this.backoffMs = 0;
         this.lastData = data;
+        logInfo(`OAuth: 5h=${data.five_hour.utilization}% 7d=${data.seven_day.utilization}%`);
         this.onDataChange.fire(data);
       }
       return data;
     } catch (err) {
+      logError(`OAuth: network error — ${err}`);
       this.onError.fire('network_error');
       return this.lastData;
     }

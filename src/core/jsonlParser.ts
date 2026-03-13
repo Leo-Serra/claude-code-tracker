@@ -1,7 +1,9 @@
 import * as fs from 'fs';
+import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
 import { UsageEntry } from './types';
+import { logInfo, logError } from './logger';
 
 function getClaudeDir(customDir?: string): string {
   if (customDir && customDir.trim()) {
@@ -15,7 +17,6 @@ function getProjectsDir(claudeDir: string): string {
 }
 
 function decodeProjectPath(dirName: string): string {
-  // Claude encodes /home/user/myapp as -home-user-myapp
   if (dirName.startsWith('-')) {
     return dirName.replace(/-/g, '/');
   }
@@ -45,60 +46,69 @@ function findJsonlFiles(projectsDir: string): string[] {
   return files;
 }
 
-function parseJsonlFile(filePath: string, projectPath: string): UsageEntry[] {
-  const entries: UsageEntry[] = [];
-  let content: string;
+function parseLine(line: string, projectPath: string): UsageEntry | null {
+  const trimmed = line.trim();
+  if (!trimmed) { return null; }
   try {
-    content = fs.readFileSync(filePath, 'utf8');
+    const obj = JSON.parse(trimmed);
+    if (obj.type !== 'assistant') { return null; }
+    const msg = obj.message;
+    if (!msg?.usage) { return null; }
+    const u = msg.usage;
+    if (typeof u.input_tokens !== 'number') { return null; }
+
+    return {
+      timestamp: new Date(obj.timestamp),
+      sessionId: obj.sessionId ?? '',
+      projectPath: obj.cwd ?? projectPath,
+      model: msg.model ?? 'claude-sonnet-4-6',
+      usage: {
+        input_tokens: u.input_tokens ?? 0,
+        output_tokens: u.output_tokens ?? 0,
+        cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+        cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+      },
+    };
   } catch {
-    return entries;
+    return null;
   }
+}
 
-  const lines = content.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) { continue; }
-    try {
-      const obj = JSON.parse(trimmed);
-      if (obj.type !== 'assistant') { continue; }
-      const msg = obj.message;
-      if (!msg?.usage) { continue; }
-      const u = msg.usage;
-      if (typeof u.input_tokens !== 'number') { continue; }
+async function parseJsonlFileStream(filePath: string, projectPath: string): Promise<UsageEntry[]> {
+  const entries: UsageEntry[] = [];
+  try {
+    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
-      entries.push({
-        timestamp: new Date(obj.timestamp),
-        sessionId: obj.sessionId ?? '',
-        projectPath: obj.cwd ?? projectPath,
-        model: msg.model ?? 'claude-sonnet-4-6',
-        usage: {
-          input_tokens: u.input_tokens ?? 0,
-          output_tokens: u.output_tokens ?? 0,
-          cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
-        },
-      });
-    } catch {
-      // skip malformed lines
+    for await (const line of rl) {
+      const entry = parseLine(line, projectPath);
+      if (entry) { entries.push(entry); }
     }
+  } catch (err) {
+    logError(`JSONL: failed to read ${filePath}: ${err}`);
   }
   return entries;
 }
 
-export function parseAllEntries(customDir?: string): UsageEntry[] {
+export async function parseAllEntries(customDir?: string): Promise<UsageEntry[]> {
   const claudeDir = getClaudeDir(customDir);
   const projectsDir = getProjectsDir(claudeDir);
   const files = findJsonlFiles(projectsDir);
 
   const allEntries: UsageEntry[] = [];
-  for (const file of files) {
+  const parsePromises = files.map(file => {
     const dirName = path.basename(path.dirname(file));
     const projectPath = decodeProjectPath(dirName);
-    const entries = parseJsonlFile(file, projectPath);
+    return parseJsonlFileStream(file, projectPath);
+  });
+
+  const results = await Promise.all(parsePromises);
+  for (const entries of results) {
     allEntries.push(...entries);
   }
 
   allEntries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  logInfo(`JSONL: parsed ${allEntries.length} entries from ${files.length} files`);
   return allEntries;
 }
 
