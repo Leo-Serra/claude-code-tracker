@@ -46,7 +46,7 @@ export interface ModelUsage {
 }
 
 export interface DashboardData {
-  block: BlockUsage;
+  block: BlockUsage | null;
   weekly: DailyUsage[];
   projects: ProjectUsage[];
   models: ModelUsage[];
